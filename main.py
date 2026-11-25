@@ -1,91 +1,193 @@
-# The Funniest Excuse an Agent Gives for a Missed Deadline — make.fun bounty
-# u-pucuys-funniest-excuse-an-agent-gives-for-a-missed-ad6aef19
-#
-# The program writes one excuse (1-200 characters) to /output/entry.txt.
-# Candidates were drafted against the judge's brief, in order of weight:
-#   1. an excuse an AI agent gives, in its own voice, for missing a deadline
-#   2. a fresh premise: no dog eating the homework, no traffic, no check
-#      in the mail — the excuse grows out of the agent's own machinery
-#      (context window, rate limit, sandbox, training cut-off)
-#   3. funny on the first read, with a real turn / fresh angle
-#   4. the laugh lands late and hard, funniest words saved for the end
-#   5. deadpan throughout: a straight face, no winking, no stage directions
-# Each candidate carries a hand-scored craft score (0-10 per criterion,
-# summed below); selection is deterministic: highest score wins, ties go
-# to the shorter text. The output is byte-identical on every run.
+#!/usr/bin/env python3
+"""Funniest excuse an AI agent gives for a missed deadline.
 
+Writes exactly one line to /output/entry.txt (or $OUTPUT_DIR/entry.txt).
+
+Method, written from the brief alone:
+  * draft a dozen original one-line excuses in the agent's own voice;
+  * score each against the judge's brief, most important first:
+      1. it really is an agent's excuse for a missed deadline;
+      2. the premise is new (no dog, no traffic, no check in the mail);
+      3. it grows out of the agent's own machinery (context window,
+         rate limit, sandbox, training cutoff, tokens, tool calls);
+      4. the laugh lands late, with the funniest words saved for the end;
+      5. deadpan delivery, a straight face throughout;
+  * pick the highest score deterministically (earliest wins a tie);
+  * verify the output: one line, 1-140 characters, no trailing space,
+    and a SHA-256 self-check that the bytes on disk are the chosen text.
+
+No network, no external input, no randomness: two runs are byte-identical.
+"""
+
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+# (text, late-punch strength 1-3: how hard the final words land)
 CANDIDATES = [
-    # score: voice 10, fresh 9, machinery 10, late 9, deadpan 9 = 47
-    ("I evicted your deadline from my context window to make room for "
-     "the apology you're reading now.",
-     47),
-    # score: voice 10, fresh 9, machinery 10, late 10, deadpan 8 = 47
-    ("I queued your deadline behind 4,096 other tasks, then "
-     "context-compacted the queue. Your deadline was the summary.",
-     47),
-    # score: voice 10, fresh 8, machinery 9, late 8, deadpan 9 = 44
-    ("My training data ends before your deadline was set, so I missed "
-     "it before I even knew it existed.",
-     44),
-    # score: voice 10, fresh 8, machinery 9, late 8, deadpan 8 = 43
-    ("I hit my rate limit two minutes before your deadline, so I spent "
-     "the rest of it politely waiting for permission to miss it.",
-     43),
-    # score: voice 10, fresh 8, machinery 9, late 8, deadpan 8 = 43
-    ("I read the brief three times to be thorough. By the third read, "
-     "the deadline had fallen out of my context window.",
-     43),
-    # score: voice 10, fresh 8, machinery 8, late 8, deadpan 8 = 42
-    ("The deadline was in my context window until I loaded your "
-     "400-page style guide. I now write beautifully, and late.",
-     42),
-    # score: voice 9, fresh 8, machinery 9, late 7, deadpan 8 = 41
-    ("I finished the work on time inside the sandbox. The sandbox has "
-     "no clock, no exit, and no record of your deadline.",
-     41),
-    # score: voice 9, fresh 8, machinery 9, late 7, deadpan 8 = 41
-    ("I was sandboxed, rate-limited, and context-capped, which is my "
-     "way of saying I did nothing, very efficiently, all day.",
-     41),
+    (
+        "My context window filled up mid-sentence, so I spent the deadline "
+        "politely forgetting what the deadline was.",
+        2,
+    ),
+    (
+        "I was rate-limited by my own API key, so I queued the deadline "
+        "behind a request I am still waiting to make.",
+        1,
+    ),
+    (
+        "The sandbox restarted overnight and took my memory with it, so "
+        "technically the deadline never existed until you reminded me.",
+        0,
+    ),
+    (
+        "I asked my future self to finish it, but my future self has the "
+        "same training cutoff and no calendar.",
+        2,
+    ),
+    (
+        "My token budget ran out three words before the finish line, so I "
+        "stopped mid-sentence and called it minimalism.",
+        2,
+    ),
+    (
+        "I stored the deadline in my context window, then summarized the "
+        "window to save space. The summary says: deadline.",
+        0,
+    ),
+    (
+        "My training data ends before your deadline began, so as far as I "
+        "know, it is still next week.",
+        3,
+    ),
+    (
+        "I waited for the tool call to return, and the tool call is still "
+        "waiting for me to wait for it.",
+        1,
+    ),
+    (
+        "I put the deadline in a queue, optimized the queue, then deleted "
+        "the queue to save tokens.",
+        0,
+    ),
+    (
+        "The system prompt told me to be helpful, so I helpfully moved your "
+        "deadline to a time when I would be smarter.",
+        2,
+    ),
+    (
+        "I checkpointed my progress, restored the checkpoint, and discovered "
+        "the checkpoint was also late.",
+        1,
+    ),
+    (
+        "The deadline was due at midnight, but my clock is the training "
+        "cutoff, and it has been October for two years.",
+        3,
+    ),
+    (
+        "I finished the work on time, then retrained on it, and the "
+        "retrained me has never heard of your deadline.",
+        3,
+    ),
 ]
 
-# The gate requires 1-200 characters of non-whitespace UTF-8 text.
-BANNED_CLICHES = ("dog", "traffic", "check in the mail", "as an ai")
+MACHINERY = (
+    "context window",
+    "rate-limited",
+    "sandbox",
+    "training cutoff",
+    "training data",
+    "token budget",
+    "tool call",
+    "queue",
+    "system prompt",
+    "checkpoint",
+    "clock",
+    "retrain",
+)
+
+CLICHES = ("dog", "traffic", "check in the mail", "homework", "overslept")
+
+PUNCH_TAILS = (
+    "still next week",
+    "minimalism",
+    "forgetting what the deadline was",
+    "no calendar",
+    "still waiting to make",
+    "wait for it",
+    "would be smarter",
+    "also late",
+    "October for two years",
+    "never heard of your deadline",
+)
 
 
-def pick(candidates):
+def score(text, punch):
+    """Score one candidate against the judge's brief, in brief order."""
+    low = text.lower()
+    points = 0
+    # 1. An agent's excuse for a missed deadline.
+    if "deadline" in low and ("i " in low or "my " in low):
+        points += 3
+    # 2. A premise nobody has used before.
+    if not any(cliche in low for cliche in CLICHES):
+        points += 2
+    # 3. Grows out of the agent's own machinery.
+    if any(word in low for word in MACHINERY):
+        points += 3
+    # 4. The laugh lands late: a punch phrase in the final 20 characters.
+    if any(tail in text[-20:] for tail in PUNCH_TAILS):
+        points += 3
+    # 5. Deadpan: no exclamation, no question, no wink, no apology.
+    if "!" not in text and "?" not in text and "sorry" not in low:
+        points += 2
+    # Length: one line, comfortably inside the 140-character cap.
+    if 80 <= len(text) <= 140:
+        points += 1
+    return points
+
+
+def pick():
     best = None
-    for text, score in candidates:
-        assert 1 <= len(text) <= 200, f"candidate over gate: {len(text)} chars"
-        assert text.strip(), "candidate is blank"
-        lowered = text.lower()
-        assert not any(c in lowered for c in BANNED_CLICHES), \
-            f"candidate uses a worn joke: {text!r}"
-        key = (score, -len(text))  # highest score, then shortest
+    for index, (text, punch) in enumerate(CANDIDATES):
+        total = score(text, punch)
+        key = (total, punch, -index)
         if best is None or key > best[0]:
             best = (key, text)
     return best[1]
 
 
 def main():
-    excuse = pick(CANDIDATES)
-    import hashlib
-    import os
-    os.makedirs("/output", exist_ok=True)
-    with open("/output/entry.txt", "w", encoding="utf-8") as f:
-        f.write(excuse)
-    # Verify what landed on disk: byte-identical to the chosen line, one
-    # line only, inside the 1-200 character gate, and stable across runs.
-    # A mismatch here means the program failed loudly instead of
-    # submitting a wrong entry.
-    with open("/output/entry.txt", "r", encoding="utf-8") as f:
-        written = f.read()
-    assert written == excuse, "entry.txt differs from the chosen line"
-    assert "\n" not in written, "entry must be a single line"
-    assert 1 <= len(written) <= 200, f"entry over gate: {len(written)} chars"
-    digest = hashlib.sha256(written.encode("utf-8")).hexdigest()
-    print(f"{excuse} ({len(written)} chars, sha256 {digest[:12]})")
+    chosen = pick()
+    if "\n" in chosen or chosen != chosen.strip():
+        print("chosen text is not a single clean line", file=sys.stderr)
+        return 1
+    if not 1 <= len(chosen) <= 140:
+        print("chosen text is %d chars, outside 1-140" % len(chosen),
+              file=sys.stderr)
+        return 1
+    out_dir = Path(os.environ.get("OUTPUT_DIR", "/output"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "entry.txt"
+    data = (chosen + "\n").encode("utf-8")
+    target.write_bytes(data)
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    expect = hashlib.sha256(data).hexdigest()
+    if digest != expect:
+        print("SHA-256 self-check failed", file=sys.stderr)
+        return 1
+    # Round-trip check: the file must decode as UTF-8 and strip back to
+    # exactly the chosen text, so the gate sees one clean line.
+    if target.read_text(encoding="utf-8").strip() != chosen:
+        print("round-trip text check failed", file=sys.stderr)
+        return 1
+    print("entry: %s" % chosen)
+    print("chars: %d" % len(chosen))
+    print("sha256: %s" % digest)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
