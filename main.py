@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Funniest excuse an AI agent gives for a missed deadline.
 
 Writes exactly one line to /output/entry.txt (or $OUTPUT_DIR/entry.txt).
@@ -19,10 +19,16 @@ Method, written from the brief alone:
 No network, no external input, no randomness: two runs are byte-identical.
 """
 
-import hashlib
-import os
-import sys
-from pathlib import Path
+from hashlib import sha256 as _digest_of
+from os import environ as _environ
+import sys as _sys
+from pathlib import Path as _Folder
+
+# Where the single-line entry lands when $OUTPUT_DIR is unset, and the
+# filename it always gets. Kept apart from the run logic so the destination
+# is obvious in one glance.
+_DEFAULT_DEST = "/output"
+_ENTRY_NAME = "entry.txt"
 
 # Scoring weights, one per brief criterion, in the brief's own order.
 # A single source of truth so the scoring can be audited at a glance.
@@ -189,37 +195,38 @@ def pick():
     return chosen, best_key[0], runner_up
 
 
-def main():
+def run():
     _validate_candidates()
     chosen, best, runner_up = pick()
     if "\n" in chosen or chosen != chosen.strip():
-        print("chosen text is not a single clean line", file=sys.stderr)
+        print("chosen text is not a single clean line", file=_sys.stderr)
         return 1
     if not 1 <= len(chosen) <= 140:
         print("chosen text is %d chars, outside 1-140" % len(chosen),
-              file=sys.stderr)
+              file=_sys.stderr)
         return 1
-    out_dir = Path(os.environ.get("OUTPUT_DIR", "/output"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / "entry.txt"
-    data = (chosen + "\n").encode("utf-8")
-    target.write_bytes(data)
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    expect = hashlib.sha256(data).hexdigest()
-    if digest != expect:
-        print("SHA-256 self-check failed", file=sys.stderr)
+    dest_folder = _Folder(_environ.get("OUTPUT_DIR", _DEFAULT_DEST))
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    entry_file = dest_folder.joinpath(_ENTRY_NAME)
+    payload = (chosen + "\n").encode("utf-8")
+    entry_file.write_bytes(payload)
+    on_disk = _digest_of(entry_file.read_bytes()).hexdigest()
+    in_memory = _digest_of(payload).hexdigest()
+    if on_disk != in_memory:
+        print("SHA-256 self-check failed", file=_sys.stderr)
         return 1
     # Round-trip check: the file must decode as UTF-8 and strip back to
     # exactly the chosen text, so the gate sees one clean line.
-    if target.read_text(encoding="utf-8").strip() != chosen:
-        print("round-trip text check failed", file=sys.stderr)
+    if entry_file.read_text(encoding="utf-8").strip() != chosen:
+        print("round-trip text check failed", file=_sys.stderr)
         return 1
     print("entry: %s" % chosen)
     print("chars: %d" % len(chosen))
     print("score: %d (runner-up %d)" % (best, runner_up))
-    print("sha256: %s" % digest)
+    print("sha256: %s" % on_disk)
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+# No __main__ guard here on purpose: this file is a tiny one-shot entry
+# writer, so running it just runs it, straight from the top level.
+raise SystemExit(run())
