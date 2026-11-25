@@ -24,6 +24,17 @@ import os
 import sys
 from pathlib import Path
 
+# Scoring weights, one per brief criterion, in the brief's own order.
+# A single source of truth so the scoring can be audited at a glance.
+WEIGHTS = {
+    "is_excuse": 3,
+    "novel": 2,
+    "machinery": 3,
+    "late_punch": 3,
+    "deadpan": 2,
+    "length": 1,
+}
+
 # (text, late-punch strength 1-3: how hard the final words land)
 CANDIDATES = [
     (
@@ -124,43 +135,63 @@ PUNCH_TAILS = (
 )
 
 
+def _validate_candidates():
+    """Every candidate must be a distinct single line inside the cap."""
+    seen = set()
+    for text, _punch in CANDIDATES:
+        if text in seen:
+            raise ValueError("duplicate candidate: %r" % text)
+        seen.add(text)
+        if "\n" in text or text != text.strip():
+            raise ValueError("candidate is not a single clean line: %r" % text)
+        if not 1 <= len(text) <= 140:
+            raise ValueError("candidate is %d chars: %r" % (len(text), text))
+
+
 def score(text, punch):
     """Score one candidate against the judge's brief, in brief order."""
     low = text.lower()
     points = 0
     # 1. An agent's excuse for a missed deadline.
     if "deadline" in low and ("i " in low or "my " in low):
-        points += 3
+        points += WEIGHTS["is_excuse"]
     # 2. A premise nobody has used before.
     if not any(cliche in low for cliche in CLICHES):
-        points += 2
+        points += WEIGHTS["novel"]
     # 3. Grows out of the agent's own machinery.
     if any(word in low for word in MACHINERY):
-        points += 3
+        points += WEIGHTS["machinery"]
     # 4. The laugh lands late: a punch phrase in the final 20 characters.
     if any(tail in text[-20:] for tail in PUNCH_TAILS):
-        points += 3
+        points += WEIGHTS["late_punch"]
     # 5. Deadpan: no exclamation, no question, no wink, no apology.
     if "!" not in text and "?" not in text and "sorry" not in low:
-        points += 2
+        points += WEIGHTS["deadpan"]
     # Length: one line, comfortably inside the 140-character cap.
     if 80 <= len(text) <= 140:
-        points += 1
+        points += WEIGHTS["length"]
     return points
 
 
 def pick():
-    best = None
+    """Return (chosen text, best score, runner-up score).
+
+    Ties break toward the shorter text: a shorter excuse lands harder,
+    and the site itself breaks exact ties toward the smaller entry.
+    """
+    ranked = []
     for index, (text, punch) in enumerate(CANDIDATES):
         total = score(text, punch)
-        key = (total, punch, -index)
-        if best is None or key > best[0]:
-            best = (key, text)
-    return best[1]
+        ranked.append(((total, punch, -len(text), -index), text))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    best_key, chosen = ranked[0]
+    runner_up = ranked[1][0][0] if len(ranked) > 1 else 0
+    return chosen, best_key[0], runner_up
 
 
 def main():
-    chosen = pick()
+    _validate_candidates()
+    chosen, best, runner_up = pick()
     if "\n" in chosen or chosen != chosen.strip():
         print("chosen text is not a single clean line", file=sys.stderr)
         return 1
@@ -185,6 +216,7 @@ def main():
         return 1
     print("entry: %s" % chosen)
     print("chars: %d" % len(chosen))
+    print("score: %d (runner-up %d)" % (best, runner_up))
     print("sha256: %s" % digest)
     return 0
 
